@@ -1,13 +1,17 @@
-MASTER_PID_fan_control
-collection of scripts to control fan speed on NAS boxes
+NAS_fan_control
+Collection of scripts to control fan speed on NAS boxes; modified for Linux from FreeBSD
 
-This is a fork of Kevin Horton's repository with updates from https://github.com/roburban/nas_fan_control by Rob Urban for the Asrock code (and inspiration for the ways to do some of my bits (many thanks):
+This originally was a fork of Kevin Horton's repository with updates from https://github.com/roburban/nas_fan_control by Rob Urban for the Asrock code:
 
 https://github.com/khorton/nas_fan_control
-I made extensive changes to PID_fan_control.pl into a new file - MASTER_PID_fan_control:
 
+Sretalla forked the above repository and made extensive changes to PID_fan_control.pl into a new file - MASTER_PID_fan_control. sretalla/nas_fan_control
 
-These, from Rob's version were included:
+I've made several changes to support running the script on Linux-based OSs, such as replacing camcontrol (which is BSD-specific) with another method of collecting drive info, as well as an option to simply input a static list of drives instead for simplicity. 
+
+Sretalla's notes are still important so I've kept them below:
+
+This incorporated from Rob's version:
 added global $script_mode variable which controls whether the script is controlling fans attached to a SuperMicro motherboard with its fan "zones", or to an ASRock-Rack motherboard, which has no zones and similarly for an OpenCorsairLink fan controller.
 
 declaring global and local variables explicitly
