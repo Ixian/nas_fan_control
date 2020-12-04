@@ -1,5 +1,5 @@
 NAS_fan_control
-Collection of scripts to control fan speed on NAS boxes; modified for Linux from FreeBSD
+Collection of scripts to control fan speed on NAS boxes; modified for Linux from FreeBSD. "nas_fan_control.pl" and "nas_fan_control.config.ini" are the two files you'll need for Supermicro or Asrock boards running Linux (tested on Ubuntu LTS 20.04.1)
 
 This originally was a fork of Kevin Horton's repository with updates from https://github.com/roburban/nas_fan_control by Rob Urban for the Asrock code:
 
