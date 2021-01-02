@@ -1,4 +1,4 @@
-[b}NAS_fan_control[/b]
+NAS_fan_control
 
 This is a script to control fan speed on NAS boxes based on hdd temps as well as the usual CPU/System/etc. temps, using fans in zones. This fork is specific to newer Asrock motherboards such as the X570D4U running Linux. It uses a PID calculation which works well to smooth out fan curves/ramp time/etc.
 
@@ -8,7 +8,7 @@ Originally this was a fork of Kevin Horton's repository with updates from https:
 
 Sretalla forked the above repository and made extensive changes to PID_fan_control.pl which I incorporated, including optional support for logging to InfluxDB.
 
-I've made several changes to support running the script on Linux-based OSs, such as replacing camcontrol (BSD-specific) with another method of collecting drive info, as well as an option to simply input a static list of drives instead for simplicity. 
+I've made several changes to support running the script on Linux-based OSs, such as replacing camcontrol (which is BSD-specific) with another method of collecting drive info, as well as an option to simply input a static list of drives instead for simplicity. 
 
 See the script header for detailed notes and history.
 
