@@ -1,6 +1,8 @@
 NAS_fan_control
 
-This is a script to control fan speed on NAS boxes via averaged hdd temps as well as the usual CPU/System/etc. temps, using fans in zones. This script has been modified for Linux from the origina(s) which were targeted at FreeBSD. "nas_fan_control.pl" and "nas_fan_control.config.ini" are the two files you'll need for Supermicro or Asrock boards running Linux (tested on Ubuntu LTS 20.04.1). Expermental CorsairLink support is also included as an alternative but has not been fully tested. 
+This is a script to control fan speed on NAS boxes via averaged hdd temps as well as the usual CPU/System/etc. temps, using fans in zones. This fork is specific to newer Asrock motherboards such as the X570D4U running Linux. 
+
+The script has been modified for Linux from the origina(s) which were targeted at FreeBSD. "nas_fan_control.pl" and "nas_fan_control.config.ini" are the two files you'll need for Supermicro or Asrock boards running Linux (tested on Ubuntu LTS 20.04.1). Expermental CorsairLink support is also included as an alternative but has not been fully tested. 
 
 Originally a fork of Kevin Horton's repository with updates from https://github.com/roburban/nas_fan_control by Rob Urban for the Asrock code: https://github.com/khorton/nas_fan_control
 
@@ -12,10 +14,16 @@ See the script header for detailed notes and history.
 
 Usage:
 
+The two primary files you want are nas_fan_control.pl and nas_fan_control_config.ini. See file headers for further detail.
+
+In nas_fan_control.pl set the Script Mode to the type of board you have. 
+
 Insure dependencies are installed if not present:
+
 sudo apt install perl hddtemp lm-sensors ipmitool
 
 Create new files; modify names & paths to suit:
+
 sudo vim nas_fan_control.pl /usr/local/bin/
 sudo vim nas_fan_control_config.ini /usr/local/bin/
 sudo vim NasFanControl.service /lib/systemd/system/
