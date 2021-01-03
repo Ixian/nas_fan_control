@@ -8,7 +8,7 @@ Originally this was a fork of Kevin Horton's repository with updates from https:
 
 Sretalla forked the above repository and made extensive changes to PID_fan_control.pl which I incorporated, including optional support for logging to InfluxDB.
 
-I've made several changes to support running the script on Linux-based OSs, such as replacing camcontrol (which is BSD-specific) with another method of collecting drive info, as well as an option to simply input a static list of drives instead for simplicity. 
+I've made several changes to support running the script on Linux-based OSs, such as replacing camcontrol (which is BSD-specific) to simply allow and option to input a static list of drives for simplicity. This could be cleaned up and moved to a config file. 
 
 See the script header for detailed notes and history.
 
