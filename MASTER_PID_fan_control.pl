@@ -1,12 +1,25 @@
-#!/usr/local/bin/perl -w
+#!/usr/bin/perl -w
 
 use strict;
 use warnings;
 
+# Parts of the Linux-specific code came from:  https://jp-powers.com/fan-control-via-ipmitool-for-supermicro-motherboards-on-ubuntu-server-1604/
+# Setup follows:
+#
+# sudo apt install perl hddtemp lm-sensors ipmitool
+# Create files
+# sudo vim nas_fan_control.pl /usr/local/bin/
+# sudo vim nas_fan_control_config.ini /usr/local/bin/
+# sudo vim NasFanControl.service /lib/systemd/system/
+# sudo systemctl daemon-reload
+# sudo systemctl enable NasFanControl.service
+# sudo service NasFanControl start
+# watch -n5 sudo ipmitool sensor OR sudo ipmitool sdr
+#
 # This script is based on the hybrid fan controller script created by @Stux,
 # and posted at:
 # https://forums.freenas.org/index.php?threads/script-hybrid-cpu-hd-fan-zone-controller.46159/
-
+# Further modified by @ixian for for Linux
 # The significant changes from @Stux's script are:
 # 1. Replace HD fan control of several discrete duty cycles as a function of
 #    hottest HD temperature with a PID controller which controls duty cycle
@@ -25,8 +38,9 @@ use warnings;
 #    calculating the average temperature.
 # 5. Added ability to put certain configuration values in a configuration
 #    file that is checked each time around the control loop.
+# 6. Replaced FreeBSD specific commands (Camcontrol, etc.) that are not available on Linux
 
-# This script can be downloaded from :
+# The original script can be downloaded from :
 # https://forums.freenas.org/index.php?threads/pid-fan-controller-perl-script.50908/
 
 ###############################################################################
@@ -34,7 +48,8 @@ use warnings;
 # X10 based system according to both the CPU and HD temperatures in order to
 # minimize noise while providing sufficient cooling to deal with scrubs and
 # CPU torture tests. It may work in X9 based systems, but this has not been
-#  tested.  It has been found to work on at least the X11SSM-F.
+#  tested.  It has been found to work on at least the X11SSM-F. Also modified to work 
+# with ASRock and Corsair (the latter not tested on Linux)
 
 # It relies on the motherboard having two fan zones, FAN1..FAN4 and FANA..FANC.
 
@@ -185,10 +200,19 @@ use warnings;
 #	  To simplify calling external programs, run_command() was added, which 
 #	  must be passed the external program name and arguments as separate tokens
 #	  and returns an array consisting of stdout split into lines.
-#
+# 2020-12-15 
+#	- Changed get_cpu_temp_sysctl to different method as dev.cpu is FreeBSD specific. This works for Intel CPUs
+#	 -Also added new "sensors" subroutine as an alternative to detecting CPU tempuratures on Linux. This is for AMD CPUs which 
+# 	  don't work with coretemp and are otherwise finicky about reporting temps. Requires lm-sensors to be installed (apt-get install
+# 	  lm-sensors) and "sensors-detect" run to identify and load the kernel module for your CPU temp. See sub for example
+#	- Changed get_hd_list to simple input for devices as there is no simple equivilent to camcontrol on Linux. This should be moved to the config file
+#	- Modified asrock_build_set_command to work with newer Asrock boards, in particular 570 series boards with IPMI, as they changed the IPMI raw commands (again)
+#	  that control the fans. The original is left commented out for reference. This should be moved to a config file variable. 
+#	- Several small Perl fixes/cleanup
 # TO DO
 #	Do not change fan speed due to calculated Tave changes when switching
 #	config scripts
+#	Lots of work could be done to move options to switches & external config variables. 
 
 ##############################################################################
 ## CONFIGURATION
@@ -200,7 +224,7 @@ use warnings;
 ## number of warmest disks to average, target average temperature and PID gains.
 ## If file is not available, or corrupt, use defaults specified in this script.
 #---------------------------------------------------------------------------
-my $config_file = '/root/PID_fan_control_config.ini';
+my $config_file = '/usr/local/bin/nas_fan_control_config.ini';
 
 #---------------------------------------------------------------------------
 # the "script mode": what motherboard(-class) is being driven. Possible values:
@@ -208,14 +232,20 @@ my $config_file = '/root/PID_fan_control_config.ini';
 # - "asrock" (ASRock Rack X470D4U2-2T)
 # - "ocl" (OpenCorsairLink Fan controller)
 #---------------------------------------------------------------------------
-my $script_mode = 'ocl';
+my $script_mode = 'asrock';
 
 #---------------------------------------------------------------------------
 # ASRock mapping -- TODO: put in a config file
 #---------------------------------------------------------------------------
 my @asrock_zones = (
-    { FAN1 => 0 },  # CPU
-    { FAN2 => 1, FAN3 => 2, FAN4 => 3, FAN5 => 4, FAN6 => 5 }, # HD
+    { FAN3 => { index => 2 } },  # CPU
+    {
+        FAN2 => { index => 1 },
+        FAN1 => { index => 0 },
+        FAN4_1 => { index => 3 },
+        FAN5_1 => { index => 4 },
+        FAN6_1 => { index => 5, factor => 0.9 },  # run this one 10% slower
+    }, # HD
 );
 
 #---------------------------------------------------------------------------
@@ -246,17 +276,17 @@ my @ocl_current_fan_speeds;
 #create the db with: curl -XPOST 'http://influxdb.host:8086/query' --data-urlencode 'q=CREATE DATABASE "freenas"'
 #---------------------------------------------------------------------------
 
-my $use_influx = 1;
+my $use_influx = 0;
 my $influx_fan_speed = 1;
 my $influx_fan_duty = 1;
 my $influx_disks = 1;
 my $influx_sensors = 1;
 my $influx_average = 1;
-my $influxdb_db="freenas";
-my $influxdb_host="192.168.1.1";
+my $influxdb_db="db_name_here";
+my $influxdb_host="xxx.xxx.xxx.xxx";
 my $influxdb_port="8086";
 my $influxdb_protocol="http";
-my $influxdb_hostname="fantest";
+my $influxdb_hostname="host_name_here";
 my $influxdb_url="$influxdb_protocol://$influxdb_host:$influxdb_port/write?db=$influxdb_db";
 
 
@@ -291,11 +321,10 @@ my $hd_fan_duty_start = 60; # HD fan duty cycle when script starts
 ## correctly on your system
 #---------------------------------------------------------------------------
 my $debug     = 4;
-my $debug_log = '/root/Debug_PID_fan_control.log';
+my $debug_log = '/var/log/debug_nas_fan_control.log';
 
 ## LOG
-#my $log = '/root/PID_fan_control.log';
-my $log  = '/var/log/PID_fan_control.log';
+my $log  = '/var/log/nas_fan_control.log';
 
 #---------------------------------------------------------------------------
 # 1 if not logging individual HD temperatures. 0 if logging temp of each HD
@@ -314,8 +343,8 @@ my $log_header_hourly_interval = 2;
 ## A modern CPU can heat up from 35C to 60C in a second or two. The fan
 ## duty cycle is set based on this
 #---------------------------------------------------------------------------
-my $high_cpu_temp = 55;    # will go HIGH when we hit
-my $med_cpu_temp  = 45;    # will go MEDIUM when we hit, or drop below again
+my $high_cpu_temp = 65;    # will go HIGH when we hit
+my $med_cpu_temp  = 50;    # will go MEDIUM when we hit, or drop below again
 my $low_cpu_temp  = 35;    # will go LOW when we fall below 35 again
 
 #---------------------------------------------------------------------------
@@ -331,7 +360,7 @@ my $low_cpu_temp  = 35;    # will go LOW when we fall below 35 again
 # maximum HD temperature, the HD fans will be set to 100% if any drive
 # reaches this temperature. Unit is Celcius
 #---------------------------------------------------------------------------
-my $hd_max_allowed_temp = 40;
+my $hd_max_allowed_temp = 41;
 
 #---------------------------------------------------------------------------
 ## CPU TEMP TO OVERRIDE HD FANS
@@ -339,7 +368,7 @@ my $hd_max_allowed_temp = 40;
 ## this prevents the HD fans from spinning up when the CPU fans are capable
 # of providing sufficient cooling.
 #---------------------------------------------------------------------------
-my $cpu_hd_override_temp = 65;
+my $cpu_hd_override_temp = 85;
 
 #---------------------------------------------------------------------------
 ## CPU/HD SHARED COOLING
@@ -352,7 +381,7 @@ my $cpu_hd_override_temp = 65;
 #---------------------------------------------------------------------------
 # 1 if the hd fans should spin up to cool the cpu, 0 otherwise
 #---------------------------------------------------------------------------
-my $hd_fans_cool_cpu = 1;
+my $hd_fans_cool_cpu = 0;
 
 #---------------------------------------------------------------------------
 ## HD FAN DUTY CYCLE TO OVERRIDE CPU FANS
@@ -393,16 +422,16 @@ my $cpu_temp_control = 1;
 ## These values are used to verify high/low fan speeds and trigger a BMC reset
 ## if necessary.
 #---------------------------------------------------------------------------
-my $cpu_max_fan_speed = 2200;
-my $hd_max_fan_speed  = 1500;
+my $cpu_max_fan_speed = 2900;
+my $hd_max_fan_speed  = 1700;
 
 #---------------------------------------------------------------------------
 ## CPU FAN DUTY LEVELS
 ## These levels are used to control the CPU fans
 #---------------------------------------------------------------------------
 my $fan_duty_high = 100;    # percentage on, ie 100% is full speed.
-my $fan_duty_med  = 80;
-my $fan_duty_low  = 55;
+my $fan_duty_med  = 60;
+my $fan_duty_low  = 40;
 
 #---------------------------------------------------------------------------
 ## HD FAN DUTY LEVELS
@@ -410,8 +439,8 @@ my $fan_duty_low  = 55;
 #---------------------------------------------------------------------------
 my $hd_fan_duty_high     = 100;    # percentage on, ie 100% is full speed.
 my $hd_fan_duty_med_high = 80;
-my $hd_fan_duty_med_low  = 50;
-my $hd_fan_duty_low      = 30;     # some 120mm fans stall below 30.
+my $hd_fan_duty_med_low  = 60;
+my $hd_fan_duty_low      = 40;     # some 120mm fans stall below 30.
 
 #---------------------------------------------------------------------------
 # HD fan duty cycle when script starts - defined in config file
@@ -439,9 +468,9 @@ my $hd_fan_zone  = 1;
 ## cpu_fan_header should be in the cpu_fan_zone
 ## hd_fan_header should be in the hd_fan_zone
 #---------------------------------------------------------------------------
-my $cpu_fan_header = "Fan 2";   # used for printing to standard output for debugging
-my $hd_fan_header  = "Fan 0";   # used for printing to standard output for debugging
-my @hd_fan_list = ("Fan 0", "Fan 1");    # used for logging to file
+my $cpu_fan_header = "FAN3";   # used for printing to standard output for debugging
+my $hd_fan_header  = "FAN4_1";   # used for printing to standard output for debugging
+my @hd_fan_list = qw(FAN1 FAN2 FAN4_1 FAN5_1 FAN6_1);    # used for logging to file
 
 ################
 ## MISC
@@ -451,11 +480,16 @@ my @hd_fan_list = ("Fan 0", "Fan 1");    # used for logging to file
 ## IPMITOOL PATH
 ## The script needs to know where ipmitool is
 #---------------------------------------------------------------------------
-my $ipmitool = '/usr/local/bin/ipmitool';
+my $ipmitool = '/usr/bin/ipmitool';
 
 # smartctl path
-my $smartctlCmd = '/usr/local/sbin/smartctl';
+my $smartctlCmd = '/usr/sbin/smartctl';
 
+# hddtemp path
+my $hddtempCmd = '/usr/sbin/hddtemp';
+
+# sensors path
+my $sensorstool = '/usr/bin/sensors';
 
 # opencorsairlink path
 my $opencorsairlink = "/root/OpenCorsairLink.elf.new";
@@ -526,18 +560,18 @@ use Time::Local;
 
 
 $SIG{INT} = sub {
-    print "\nCaught SIGINT: setting fan mode to optimal\n";
-    set_fan_mode("optimal");
+    print "\nCaught SIGINT: setting fan mode to full\n";
+    set_fan_mode("full");
     exit(0);
 };
 $SIG{TERM} = sub {
-    print "\nCaught SIGTERM: setting fan mode to optimal\n";
-    set_fan_mode("optimal");
+    print "\nCaught SIGTERM: setting fan mode to full\n";
+    set_fan_mode("full");
     exit(0);
 };
 $SIG{HUP} = sub {
-    print "\nCaught SIGHUP: setting fan mode to optimal\n";
-    set_fan_mode("optimal");
+    print "\nCaught SIGHUP: setting fan mode to full\n";
+    set_fan_mode("full");
     exit(0);
 };
 
@@ -729,8 +763,9 @@ sub main {
             printf( LOG "%6s", $ave_fan_speed );
             printf( LOG "%4i/%-3i", $hd_fan_duty_old, $hd_fan_duty );
 
-            $cput = get_cpu_temp_sysctl();
-            printf( LOG "%4i %6.2f %6.2f  %6.2f  %6.2f%%\n",
+            # $cput = get_cpu_temp_sysctl();
+            $cput = get_cpu_temp_sensors ();
+			printf( LOG "%4i %6.2f %6.2f  %6.2f  %6.2f%%\n",
                 $cput, $P, $I, $D, $hd_duty );
         }
 
@@ -811,13 +846,19 @@ sub asrock_set_zone_values
     my ($zone, $duty_cycle) = @_;
 
     foreach my $fan (keys(%{ $asrock_zones[$zone] })) {
-        $asrock_current_fan_duty_cycle_values[ $asrock_zones[$zone]->{$fan} ] = $duty_cycle;
+        my $ref = $asrock_zones[$zone]->{$fan};
+        my $val = $duty_cycle;
+        if (exists($ref->{factor})) {
+            $val = int($val * $ref->{factor} + 0.5);
+            $val = 100 if ($val > 100);
+        }
+        $asrock_current_fan_duty_cycle_values[ $ref->{index} ] = $val;
     }
 }
 
 sub asrock_build_set_command {
-    #return ($ipmitool, 'raw', '0x3a', '0x01', @asrock_current_fan_duty_cycle_values, '0x0', '0x0');
-    return ($ipmitool, 'raw', '0x3a', '0x01', (map { sprintf("0x%2x", $_) } @asrock_current_fan_duty_cycle_values), '0x0', '0x0');
+    #return ($ipmitool, 'raw', '0x3a', '0x01', (map { sprintf("0x%2x", $_) } @asrock_current_fan_duty_cycle_values), '0x0', '0x0');
+	return ($ipmitool, 'raw', '0x3a', '0xd6', (map { sprintf("0x%2x", $_) } @asrock_current_fan_duty_cycle_values), '0x64', '0x64', '0x64', '0x64', '0x64', '0x64', '0x64', '0x64', '0x64', '0x64');
 }
 
 sub ocl_set_zone_values
@@ -845,7 +886,7 @@ sub ocl_set_zone_values
     foreach my $fan (keys(%{ $ocl_zones[$zone] })) { 
         $pattern = qr/($fan.*)\n(.PWM.*)\n(.RPM.*)/;
         @lines = join("\n", @result) =~ m/$pattern/g;
-        @speed = split(/ /, @lines[2]);
+        @speed = split(/ /, $lines[2]);
         $ocl_current_fan_speeds[ $ocl_zones[$zone]->{$fan} ] = $speed[1];
         #if ($use_influx == 1 && $influx_fan_speed == 1) { log_to_influx("FanSpeed", $fan, $speed[1]) ;}
     }
@@ -853,7 +894,7 @@ sub ocl_set_zone_values
         foreach my $sensor (@ocl_sensors) {
 	    $pattern = qr/($sensor.*)\n/;
             @lines = join("\n", @result) =~ m/$pattern/g;
-            @temp = split / /, @lines[0];
+            @temp = split / /, $lines[0];
             log_to_influx("SensorTemp", $sensor, $temp[2]) ;
     	}
     }
@@ -869,65 +910,43 @@ sub log_to_influx
         my @command = ('curl', '-i', "-XPOST $influxdb_url -d \"$data\"");
         my @output = run_command(@command);
 }
-
 sub get_hd_list {
-    my @cmd = ('camcontrol', 'devlist');
-    my @vals;
-    foreach (run_command(@cmd)) {
-        next if (/SSD|Verbatim|Kingston|Elements|Enclosure|Virtual|KINGSTON/);
-        if (/\((?:pass\d+,(a?da\d+)|(a?da\d+),pass\d+)\)/) {
-            dprint(2, $1);
-            push(@vals, $1);
-        }
-    }
-    dprint(3, "@vals");
+    my @vals = ("sda", "sdb", "sdc", "sdd", "sde", "sdf", "sdg", "sdh");
     return @vals;
 }
-
 sub get_one_hd_temp
 {
     my $disk_dev = shift;
-    my @command = ($smartctlCmd, '-A', "/dev/$disk_dev");
-    my $temp;
-
-    foreach (run_command(@command)) {
-        chomp;
-        dprint(2, $_);
-        if (/Temperature_Celsius/) { $temp = (split)[9]; }
-    }
-    if ($use_influx == 1 && $influx_disks == 1) { log_to_influx("DiskTemp", $disk_dev, $temp);}
+    my @command = ($hddtempCmd, '-n', "/dev/$disk_dev");
+    my $temp = `@command`;
+       chomp $temp;
+    
     return $temp;
 }
+
+
 
 sub get_hd_temp {
     my $max_temp = 0;
 
     foreach my $item (@hd_list) {
         my $disk_dev = "/dev/$item";
-
-        my @command = ($smartctlCmd, '-A', $disk_dev);
-        my $temp;
-        foreach (run_command(@command)) {
-            chomp;
-            dprint(2, $_);
-            # temperature is 10th token
-            if (/Temperature_Celsius/) {
-                $temp = (split)[9]; 
-                if ($use_influx == 1 && $influx_disks == 1) { log_to_influx("DiskTemp", $item, $temp);}
-            }
-        }
-
+        my @command = ($hddtempCmd, '-n', $disk_dev);
+        my $temp = `@command`;
+           chomp $temp;
+		
         if ($temp) {
             dprint( 1, "$disk_dev: $temp" );
-
             $max_temp = $temp if $temp > $max_temp;
-        }
+		}
     }
-
+	
     dprint( 0, "Maximum HD Temperature: $max_temp" );
 
     return $max_temp;
 }
+
+
 
 # return minimum, maximum, average HD temperatures and array of individual temps
 sub get_hd_temps
@@ -1186,9 +1205,9 @@ sub control_cpu_fan {
     my ($old_cpu_fan_level) = @_;
 
     # no longer used, because sysctl is better, and more compatible.
-    # my $cpu_temp = get_cpu_temp_ipmi();
+    my $cpu_temp = get_cpu_temp_sensors();
 
-    my $cpu_temp = get_cpu_temp_sysctl();
+    # my $cpu_temp = get_cpu_temp_sysctl();
 
     my $cpu_fan_level = decide_cpu_fan_level( $cpu_temp, $old_cpu_fan_level );
 
@@ -1323,10 +1342,6 @@ sub get_fan_ave_speed {
         $fan_count += 1;
     }
 
-    # omg, truly horrible
-    #my $ave_speed = sprintf( "%i", $speed_sum / $fan_count );
-
-    #return $ave_speed;
     return(int($speed_sum/$fan_count));
 }
 
@@ -1430,47 +1445,47 @@ sub set_fan_mode {
 }
 
 # returns the maximum core temperature from the kernel to determine CPU
-# temperature. in my testing I found that the max core temperature was
-# pretty much the same as the IPMI 'CPU Temp' value, but its much quicker
-# to read, and doesn't require X10 IPMI. And works when the IPMI is
-# rebooting too.
-sub get_cpu_temp_sysctl {
+# temperature. 
+sub get_cpu_temp_sysctl
+{
+    # Changed for Linux as sysctl doesn't return useful temp data for that OS
+    my $core_temps = `cat /sys/devices/platform/coretemp.?/hwmon/hwmon?/temp?_input`;
+    chomp($core_temps);
 
-    #----------------------------------------------------------------------
-    # significantly more efficient to filter to dev.cpu than to just grep the whole lot!
-    # *cough*
-    # significantly more efficient to only spawn one subprocess for sysctl than a pipeline with
-    # egrep, awk, sed, kitchensink, garagedooropener, all to do what Perl is good at
-    #----------------------------------------------------------------------
+    dprint(3,"core_temps:\n$core_temps\n");
 
-    my @core_temps_list;
+    my @core_temps_list = split(" ", $core_temps);
+    
+    dprint_list( 4, "core_temps_list", @core_temps_list );
+
     my $max_core_temp = 0;
-    my @cmd = ('sysctl', '-a', 'dev.cpu');
-    foreach (run_command(@cmd)) {
-        if (/^dev\.cpu\.\d+\.temperature:\s+([\d.]+)C$/) {
-            push(@core_temps_list, $1);
-            dprint( 2, "core_temp = $1 C" );
-            $max_core_temp = $1 if $1 > $max_core_temp;
+    
+    foreach my $core_temp (@core_temps_list)
+    {
+        if( $core_temp )
+        {
+	    $core_temp = $core_temp / 1000;
+            dprint( 2, "core_temp = $core_temp C\n");
+            
+            $max_core_temp = $core_temp if $core_temp > $max_core_temp;
         }
     }
 
-    dprint_list( 4, "core_temps_list", @core_temps_list );
+    dprint(1, "CPU Temp: $max_core_temp\n");
 
-    dprint( 1, "CPU Temp: $max_core_temp" );
-
-    # possible that this is 0 if there was a fault reading the core temps
-    $last_cpu_temp = $max_core_temp;
+    $last_cpu_temp = $max_core_temp; #possible that this is 0 if there was a fault reading the core temps
 
     return $max_core_temp;
 }
+# sub get_cpu_temp_sysctl {
 
-# reads the IPMI 'CPU Temp' field to determine overall CPU temperature
-sub get_cpu_temp_ipmi {
+# # read the Sensors value for CPU Temp to grab overall CPU temperature
+sub get_cpu_temp_sensors {
     my $cpu_temp;
-    my @cmd = ($ipmitool, 'sensor', 'get', 'CPU Temp');
-    foreach (run_command(@cmd)) {
-        if (/^\s*sensor\s+reading\s*:\s*(\d+)\D/i) {
-            $cpu_temp = $1;
+	my @cmd = ($sensorstool, '-u', 'k10temp-pci-00c3');
+	foreach (run_command(@cmd)) {
+       if (/temp2_input:\s*(\d+)/i) {
+	        $cpu_temp = $1;
         }
     }
 
@@ -1707,4 +1722,3 @@ sub read_config {
     }
     return ( $hd_ave_target, $Kp, $Ki, $Kd, $hd_num_peak, $hd_fan_duty_start, $config_time );
 }
-
